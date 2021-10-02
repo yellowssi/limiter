@@ -84,6 +84,14 @@ if err != nil {
     panic(err)
 }
 
+// Or use a etcd store.
+import "github.com/ulule/limiter/v3/drivers/store/etcd"
+
+store, err := etcd.NewStore(client)
+if err != nil {
+	panic(err)
+}
+
 // Or use a in-memory store with a goroutine which clears expired keys.
 import "github.com/ulule/limiter/v3/drivers/store/memory"
 
@@ -118,9 +126,10 @@ The ip address of the request is used as a key in the store.
 If the key does not exist in the store we set a default
 value with an expiration period.
 
-You will find two stores:
+You will find three stores:
 
 - Redis: rely on [TTL](http://redis.io/commands/ttl) and incrementing the rate limit on each request.
+- Etcd: rely on [Lease](https://etcd.io/docs/v3.3/dev-guide/interacting_v3/#get-lease-information) and inserting a new key with UUID for counting.
 - In-Memory: rely on a fork of [go-cache](https://github.com/patrickmn/go-cache) with a goroutine to clear expired keys using a default interval.
 
 When the limit is reached, a `429` HTTP status code is sent.
