@@ -54,8 +54,8 @@ func TestEtcdClientExpiration(t *testing.T) {
 
 	key := "foobar"
 	value := int64(642)
-	keyNoExpiration := -1 * time.Nanosecond
-	keyNotExist := -2 * time.Nanosecond
+	keyNoExpiration := int64(-1)
+	keyNotExist := int64(-2)
 
 	ctx := context.Background()
 	_, err = client.Delete(ctx, key)

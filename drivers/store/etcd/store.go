@@ -3,10 +3,11 @@ package etcd
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
-	"github.com/google/uuid"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/client/v3"
 
 	"github.com/ulule/limiter/v3"
@@ -93,16 +94,9 @@ func (store *Store) Increment(ctx context.Context, key string, count int64, ttl 
 	if err != nil {
 		return 0, 0, err
 	}
-	if ttl > 0 {
-		for i := 0; i < int(count); i++ {
-			if err = PutKeyLease(ctx, store.client, key, ttl); err != nil {
-				return 0, 0, err
-			}
-		}
-	}
 	if rsp.Count == 0 {
 		if ttl > 0 {
-			if err = PutKeyWithExpiration(ctx, store.client, key, "", ttl); err != nil {
+			if err = PutKeyWithExpiration(ctx, store.client, key, strconv.FormatInt(count, 10), ttl); err != nil {
 				return 0, 0, err
 			}
 		}
@@ -112,11 +106,19 @@ func (store *Store) Increment(ctx context.Context, key string, count int64, ttl 
 	if err != nil {
 		return 0, 0, err
 	}
-	count, err = GetKeyCount(ctx, store.client, key)
+	ret, err := GetKeyCount(ctx, store.client, key)
 	if err != nil {
 		return 0, 0, err
 	}
-	return count, ttl, nil
+	ret += count
+	leaseId := clientv3.LeaseID(rsp.Kvs[0].Lease)
+	if _, err = store.client.Put(ctx, key, strconv.FormatInt(ret, 10), clientv3.WithLease(leaseId)); err != nil {
+		if err == rpctypes.ErrLeaseNotFound {
+			return 0, 0, nil
+		}
+		return 0, 0, err
+	}
+	return ret, ttl, nil
 }
 
 func PutKeyWithExpiration(ctx context.Context, client *clientv3.Client, key string, value string, expiration int64) error {
@@ -128,11 +130,6 @@ func PutKeyWithExpiration(ctx context.Context, client *clientv3.Client, key stri
 	return err
 }
 
-func PutKeyLease(ctx context.Context, client *clientv3.Client, key string, expiration int64) error {
-	id := uuid.New()
-	return PutKeyWithExpiration(ctx, client, key+"/"+id.String(), "", expiration)
-}
-
 func GetKeyCountExpiration(ctx context.Context, client *clientv3.Client, key string) (int64, int64, error) {
 	rsp, err := client.Get(ctx, key)
 	if err != nil {
@@ -141,7 +138,7 @@ func GetKeyCountExpiration(ctx context.Context, client *clientv3.Client, key str
 	if rsp.Count == 0 {
 		return 0, 0, nil
 	}
-	count, err := GetKeyCount(ctx, client, key)
+	count, err := getCount(*rsp.Kvs[0])
 	if err != nil {
 		return 0, 0, err
 	}
@@ -153,11 +150,14 @@ func GetKeyCountExpiration(ctx context.Context, client *clientv3.Client, key str
 }
 
 func GetKeyCount(ctx context.Context, client *clientv3.Client, key string) (int64, error) {
-	rsp, err := client.Get(ctx, key+"/", clientv3.WithPrefix(), clientv3.WithKeysOnly())
+	rsp, err := client.Get(ctx, key)
 	if err != nil {
 		return 0, err
 	}
-	return rsp.Count, nil
+	if rsp.Count == 0 {
+		return 0, nil
+	}
+	return getCount(*rsp.Kvs[0])
 }
 
 func GetKeyExpiration(ctx context.Context, client *clientv3.Client, key string) (int64, error) {
@@ -166,26 +166,31 @@ func GetKeyExpiration(ctx context.Context, client *clientv3.Client, key string) 
 		return 0, err
 	}
 	if rsp.Count == 0 {
-		return 0, nil
+		return -2, nil
 	}
-	ttl, err := getExpiration(ctx, client, *rsp.Kvs[0])
+	return getExpiration(ctx, client, *rsp.Kvs[0])
+}
+
+func getCount(kv mvccpb.KeyValue) (int64, error) {
+	count, err := strconv.ParseInt(string(kv.Value), 10, 64)
 	if err != nil {
 		return 0, err
 	}
-	return ttl, nil
+	return count, nil
 }
 
 func getExpiration(ctx context.Context, client *clientv3.Client, kv mvccpb.KeyValue) (int64, error) {
-	var ttl = int64(0)
-	// parse ttl
+	var ttl = int64(-1)
 	leaseID := clientv3.LeaseID(kv.Lease)
 	if leaseID != clientv3.NoLease {
 		ttlResponse, err := client.TimeToLive(ctx, leaseID)
 		if err != nil {
+			if err == rpctypes.ErrLeaseNotFound {
+				return -1, nil
+			}
 			return 0, err
 		}
 		ttl = ttlResponse.TTL
 	}
-
 	return ttl, nil
 }
